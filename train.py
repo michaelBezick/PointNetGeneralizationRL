@@ -11,6 +11,7 @@ from dm_control import suite
 from torch.utils.tensorboard import SummaryWriter
 
 from point_cloud_generator import PointCloudGenerator
+import pdb
 
 env = suite.load(domain_name="walker", task_name="walk")
 physics = env.physics
@@ -259,11 +260,12 @@ class SACAgent:
 
 # Training Loop
 agent = SACAgent(LATENT_DIM, action_dim)
+
 # Function to collect a sequence of frames with frame skipping
-def get_depth_observation_sequence(env, num_frames=3, frame_skip=1, height=84, width=84, camera_ids=[0, 1]):
+def get_depth_observation_sequence(env, num_frames=3, frame_skip=1, height=84, width=84, camera_ids=[0, 1], last_action=None):
     """
     Collects a sequence of `num_frames`, each containing 2 depth images (from different cameras).
-    The function applies frame skipping by repeating actions every `frame_skip` frames.
+    Applies frame skipping by repeating the last chosen action.
     
     Returns shape: (num_frames, 2, height, width) -> 3 frames, 2 images per frame (total 6 images).
     """
@@ -277,34 +279,40 @@ def get_depth_observation_sequence(env, num_frames=3, frame_skip=1, height=84, w
             depth_images.append(depth_image)
         frames.append(np.array(depth_images))  # Shape: (2, height, width)
 
-        # Apply frame skipping: Execute the same action for `frame_skip` steps
+        # Apply frame skipping: Reuse the last chosen action
         for _ in range(frame_skip):
-            env.step(env.action_spec().sample())
+            env.step(last_action)
 
     return np.array(frames)  # Shape: (3, 2, height, width)
 
-# Training Loop with Frame Skipping
+def point_cloud_to_tensor(point_cloud):
+    points = np.asarray(point_cloud.points, dtype=np.float32)
+    points_tensor = torch.tensor(points)
+    return points_tensor
+
 FRAME_SKIP = 1  # Repeat each action for 1 extra frame
 
 for episode in range(TOTAL_EPISODES):
     timestep = env.reset()
-    frames = get_depth_observation_sequence(env, num_frames=3, frame_skip=FRAME_SKIP)  # Shape: (3, 2, H, W)
+    last_action = np.zeros(action_dim)  # Initialize with a neutral action
+    frames = get_depth_observation_sequence(env, num_frames=3, frame_skip=FRAME_SKIP, last_action=last_action)  # Shape: (3, 2, H, W)
     total_reward = 0
 
     for step in range(MAX_STEPS):
         # Encode 3-frame sequence (2 depth images per frame) into a latent vector
-        
+        breakpoint()
+        if len(np.shape(frames)) == 4:
+            frames = np.expand_dims(frames, axis=0)
         point_clouds = point_cloud_generator.convertDepthImagesToPointcloud(frames, num_cameras=2, num_frames=3)
 
-        latent_vector = agent.encoder(point_clouds)
+        latent_vector = agent.encoder(point_clouds)  # Shape: (latent_dim)
 
         action = agent.select_action(latent_vector)
         
         # Execute the chosen action for `frame_skip` steps
-        for _ in range(FRAME_SKIP):
-            timestep = env.step(action)
+        timestep = env.step(action)
 
-        next_frames = get_depth_observation_sequence(env, num_frames=3, frame_skip=FRAME_SKIP)  # Shape: (3, 2, H, W)
+        next_frames = get_depth_observation_sequence(env, num_frames=3, frame_skip=FRAME_SKIP, last_action=action)  # Shape: (3, 2, H, W)
 
         reward = timestep.reward
         done = timestep.last()
@@ -313,6 +321,7 @@ for episode in range(TOTAL_EPISODES):
         agent.update()
 
         frames = next_frames
+        last_action = action  # Store the last action for frame skipping
         total_reward += reward
 
         if done:

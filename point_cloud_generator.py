@@ -180,7 +180,7 @@ class PointCloudGenerator(object):
             o3d_clouds = []
             for camera_id in range(num_cameras):
 
-                depth_img = images[:, 2 * frame_id + camera_id, :, :]
+                depth_img = images[0, frame_id, camera_id, :, :]
 
                 # convert camera matrix and depth image to Open3D format, then
                 #    generate point cloud
