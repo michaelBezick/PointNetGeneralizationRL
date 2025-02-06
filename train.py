@@ -11,16 +11,11 @@ from dm_control import suite
 from torch.utils.tensorboard import SummaryWriter
 
 from point_cloud_generator import PointCloudGenerator
-from point_net import PointNetEncoder
 
 env = suite.load(domain_name="walker", task_name="walk")
 physics = env.physics
 
 point_cloud_generator = PointCloudGenerator(physics)
-point_cloud = point_cloud_generator.generateCroppedPointCloud(
-    fast=True
-)  # doesn't save images
-
 
 # Hyperparameters
 GAMMA = 0.99  # Discount factor
@@ -32,6 +27,7 @@ ALPHA = 0.2  # Entropy temperature
 TOTAL_EPISODES = 1000
 MAX_STEPS = 1000
 HIDDEN_DIM = 64
+LATENT_DIM=64
 
 # TensorBoard Logger
 writer = SummaryWriter("runs/sac_walker")
@@ -46,6 +42,54 @@ action_dim = action_spec.shape[0]
 action_min = torch.tensor(action_spec.minimum, dtype=torch.float32)
 action_max = torch.tensor(action_spec.maximum, dtype=torch.float32)
 
+class PointNetEncoder(nn.Module):
+    def __init__(self, latent_dim):
+        super().__init__()
+
+        self.h = nn.Sequential(
+            nn.Conv1d(3, 64, kernel_size=1), nn.BatchNorm1d(64), nn.ReLU()
+        )
+
+        self.mlp2 = nn.Sequential(
+            nn.Conv1d(64, 128, kernel_size=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Conv1d(128, 128, kernel_size=1),
+            nn.BatchNorm1d(128),
+        )
+
+        self.mlp3 = nn.Sequential(
+            nn.Conv1d(128, 64, kernel_size=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, kernel_size=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, latent_dim, kernel_size=1),
+            nn.BatchNorm1d(latent_dim),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+
+        """I don't think I need to transform because it is the same"""
+
+        """Input size: [b, n, 3]"""
+
+        # transform here
+
+        x = torch.permute(x, (0, 2, 1))  # [b,3,n]
+
+        x = self.h(x)  # x -> [b,64,n]
+
+        # transform here
+        x = self.mlp2(x)  # x -> [b,128,n]
+
+        x = torch.max(x, dim=2)  # x -> [b, 128]
+
+        x = self.mlp3(x)
+
+        return x
 
 # Neural Networks
 class Actor(nn.Module):
@@ -214,7 +258,7 @@ class SACAgent:
 
 
 # Training Loop
-agent = SACAgent(obs_dim, action_dim)
+agent = SACAgent(LATENT_DIM, action_dim)
 # Function to collect a sequence of frames with frame skipping
 def get_depth_observation_sequence(env, num_frames=3, frame_skip=1, height=84, width=84, camera_ids=[0, 1]):
     """
@@ -249,7 +293,10 @@ for episode in range(TOTAL_EPISODES):
 
     for step in range(MAX_STEPS):
         # Encode 3-frame sequence (2 depth images per frame) into a latent vector
-        latent_vector = agent.encoder(frames)  # Shape: (latent_dim)
+        
+        point_clouds = point_cloud_generator.convertDepthImagesToPointcloud(frames, num_cameras=2, num_frames=3)
+
+        latent_vector = agent.encoder(point_clouds)
 
         action = agent.select_action(latent_vector)
         

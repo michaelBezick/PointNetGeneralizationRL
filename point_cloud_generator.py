@@ -173,6 +173,69 @@ class PointCloudGenerator(object):
             )
             self.cam_mats.append(cam_mat)
 
+    def convertDepthImagesToPointcloud(self, images, num_cameras, num_frames):
+        all_combined_clouds = []
+
+        for frame_id in range(num_frames):
+            o3d_clouds = []
+            for camera_id in range(num_cameras):
+
+                depth_img = images[:, 2 * frame_id + camera_id, :, :]
+
+                # convert camera matrix and depth image to Open3D format, then
+                #    generate point cloud
+                od_cammat = cammat2o3d(
+                    self.cam_mats[camera_id], self.img_width, self.img_height
+                )
+
+                max_depth = 6
+
+                depth_img[depth_img >= max_depth] = 0
+
+                od_depth = o3d.geometry.Image(np.ascontiguousarray(depth_img))
+                
+
+                o3d_cloud = o3d.geometry.PointCloud.create_from_depth_image(
+                    od_depth, od_cammat
+                )
+
+                cam_pos = self.sim.model.cam_pos[camera_id]
+
+                c2b_r = rotMatList2NPRotMat(self.sim.model.cam_mat0[camera_id])
+
+                b2w_r = quat2Mat([0, 1, 0, 0])
+                c2w_r = np.matmul(c2b_r, b2w_r)
+                c2w = posRotMat2Mat(cam_pos, c2w_r)
+                transformed_cloud = o3d_cloud.transform(c2w)
+
+                if self.target_bounds != None:
+                    transformed_cloud = transformed_cloud.crop(self.target_bounds)
+
+                o3d_clouds.append(transformed_cloud)
+
+            combined_cloud = o3d.geometry.PointCloud()
+            for cloud in o3d_clouds:
+                combined_cloud += cloud
+
+            #scale the point cloud to have max magnitude of 1 and shift to have mean 0,0,0
+            points = np.asarray(combined_cloud.points)
+
+            center = np.mean(points, axis=0)
+            centered_points = points - center
+
+            magnitudes = np.linalg.norm(centered_points, axis=1)
+            max_magnitude = np.max(magnitudes)
+
+            if max_magnitude > 0:
+                normalized_points = centered_points / max_magnitude
+                combined_cloud.points = o3d.utility.Vector3dVector(normalized_points)
+            else:
+                combined_cloud.points = o3d.utility.Vector3dVector(centered_points)
+
+            all_combined_clouds.append(combined_cloud)
+
+        return all_combined_clouds
+
     def generateCroppedPointCloud(self, save_img_dir=None, fast=True):
         o3d_clouds = []
         cam_poses = []
